@@ -2,7 +2,7 @@ if getgenv().Aiming then return getgenv().Aiming end
 
 -- // Dependencies
 local SignalManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/Stefanuk12/Signal/main/Manager.lua"))()
-local BeizerManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/Stefanuk12/ROBLOX/master/Universal/Aiming/BeizerManager.lua"))()
+local BeizerManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/Stefanuk12/Aiming/main/BeizerManager.lua"))()
 
 -- // Services
 local Players = game:GetService("Players")
@@ -22,8 +22,6 @@ local Color3fromRGB = Color3.fromRGB
 local GetGuiInset = GuiService.GetGuiInset
 local Randomnew = Random.new
 local mathfloor = math.floor
-local CharacterAdded = LocalPlayer.CharacterAdded
-local CharacterAddedWait = CharacterAdded.Wait
 local WorldToViewportPoint = CurrentCamera.WorldToViewportPoint
 local RaycastParamsnew = RaycastParams.new
 local EnumRaycastFilterTypeBlacklist = Enum.RaycastFilterType.Blacklist
@@ -35,29 +33,26 @@ local FindFirstChildWhichIsA = Instancenew("Part").FindFirstChildWhichIsA
 local FindFirstChild = Instancenew("Part").FindFirstChild
 local tableremove = table.remove
 local tableinsert = table.insert
-local RenderStepped = RunService.RenderStepped
 local GetMouseLocation = UserInputService.GetMouseLocation
+local CFramelookAt = CFrame.lookAt
+local Vector2new = Vector2.new
+local GetChildren = Instancenew("Part").GetChildren
 
--- // Silent Aim Vars
-local Aiming = {
+-- // Vars
+local AimingSettings = {
     Enabled = true,
-
-    ShowFOV = true,
-    FOV = 60,
-    FOVSides = 12,
-    FOVColour = Color3fromRGB(231, 84, 128),
-
     VisibleCheck = true,
-    ShowCredits = true,
-
     HitChance = 100,
-
-    Selected = nil,
-    SelectedPart = nil,
-    SelectedPosition = nil,
-    SelectedPositionOnScreen = nil,
-
     TargetPart = {"Head", "UpperTorso", "HumanoidRootPart", "LowerTorso"},
+    RaycastIgnore = nil,
+
+    FOVSettings = {
+        Circle = Drawingnew("Circle"),
+        Enabled = true,
+        Scale = 60,
+        Sides = 12,
+        Colour = Color3fromRGB(231, 84, 128)
+    },
 
     Ignored = {
         Teams = {
@@ -66,21 +61,56 @@ local Aiming = {
                 TeamColor = LocalPlayer.TeamColor,
             },
         },
-        IgnoreOtherTeams = true,
+        IgnoreLocalTeam = true,
+
         Players = {
             LocalPlayer,
             91318356
         }
-    },
+    }
+}
+local Aiming = {
+    ShowCredits = true,
+    Settings = AimingSettings,
 
-    RaycastIgnore = nil,
-    Signals = SignalManager.new()
+    Signals = SignalManager.new(),
+
+    Selected = {
+        Instance = nil,
+        Part = nil,
+        Position = nil,
+        OnScreen = false
+    }
 }
 getgenv().Aiming = Aiming
 
+-- // Get Settings
+function AimingSettings.Get(...)
+    -- // Vars
+    local args = {...}
+    local argsCount = #args
+    local Identifier = args[argsCount]
+
+    -- // Navigate through settings
+    local Found = AimingSettings
+    for i = 1, argsCount - 1 do
+        -- // Vars
+        local v = args[i]
+
+        -- // Make sure it exists
+        if (v) then
+            -- // Set
+            Found = Found[v]
+        end
+    end
+
+    -- // Return
+    return Found[Identifier]
+end
+
 -- // Create signals
 do
-    local SignalNames = {"TargetPlayerChanged", "TargetPartChanged", "TargetPartPositionChanged", "TargetPartPositionOnScreenChanged"}
+    local SignalNames = {"InstanceChanged", "PartChanged", "PartPositionChanged", "OnScreenChanged"}
 
     for _, SignalName in ipairs(SignalNames) do
         Aiming.Signals:Create(SignalName)
@@ -88,12 +118,11 @@ do
 end
 
 -- // Create circle
-local circle = Drawingnew("Circle")
+local circle = AimingSettings.FOVSettings.Circle
 circle.Transparency = 1
 circle.Thickness = 2
-circle.Color = Aiming.FOVColour
+circle.Color = AimingSettings.FOVSettings.Colour
 circle.Filled = false
-Aiming.FOVCircle = circle
 
 -- // Update
 function Aiming.UpdateFOV()
@@ -104,250 +133,274 @@ function Aiming.UpdateFOV()
 
     -- // Vars
     local MousePosition = GetMouseLocation(UserInputService)
+    local Settings = AimingSettings.FOVSettings
 
     -- // Set Circle Properties
-    circle.Visible = Aiming.ShowFOV
-    circle.Radius = (Aiming.FOV * 3)
+    circle.Visible = Settings.Enabled
+    circle.Radius = (Settings.Scale * 3)
     circle.Position = MousePosition
-    circle.NumSides = Aiming.FOVSides
-    circle.Color = Aiming.FOVColour
+    circle.NumSides = Settings.Sides
+    circle.Color = Settings.Colour
 
     -- // Return circle
     return circle
 end
 
--- // Custom Functions
-local CalcChance = function(percentage)
-    -- // Floor the percentage
-    percentage = mathfloor(percentage)
+-- // Utilities
+local Utilities = {}
+Aiming.Utilities = Utilities
+do
+    -- // Chance
+    function Utilities.CalculateChance(Percentage)
+        -- // Floor the percentage
+        Percentage = mathfloor(Percentage)
 
-    -- // Get the chance
-    local chance = mathfloor(Randomnew().NextNumber(Randomnew(), 0, 1) * 100) / 100
+        -- // Get the chance
+        local chance = mathfloor(Randomnew().NextNumber(Randomnew(), 0, 1) * 100) / 100
 
-    -- // Return
-    return chance <= percentage / 100
-end
+        -- // Return
+        return chance <= Percentage / 100
+    end
 
--- // Customisable Checking Functions: Is a part visible
-function Aiming.IsPartVisible(Part, PartDescendant)
-    -- // Vars
-    local Character = LocalPlayer.Character or CharacterAddedWait(CharacterAdded)
-    local Origin = CurrentCamera.CFrame.Position
-    local _, OnScreen = WorldToViewportPoint(CurrentCamera, Part.Position)
+    -- // Get Character
+    function Utilities.Character(Player)
+        return Player.Character
+    end
 
-    -- //
-    if (OnScreen) then
+    -- // Check if a part is visible (to camera)
+    function Utilities.IsPartVisible(Part, PartDescendant)
         -- // Vars
-        local raycastParams = RaycastParamsnew()
-        raycastParams.FilterType = EnumRaycastFilterTypeBlacklist
-        raycastParams.FilterDescendantsInstances = (typeof(Aiming.RaycastIgnore) == "function" and Aiming.RaycastIgnore() or Aiming.RaycastIgnore) or {Character, CurrentCamera}
+        local Character = Utilities.Character(LocalPlayer)
+        local Origin = CurrentCamera.CFrame.Position
+        local _, OnScreen = WorldToViewportPoint(CurrentCamera, Part.Position)
 
-        -- // Cast ray
-        local Result = Raycast(Workspace, Origin, Part.Position - Origin, raycastParams)
-
-        -- // Make sure we get a result
-        if (Result) then
+        -- //
+        if (OnScreen) then
             -- // Vars
-            local PartHit = Result.Instance
-            local Visible = (not PartHit or IsDescendantOf(PartHit, PartDescendant))
+            local raycastParams = RaycastParamsnew()
+            raycastParams.FilterType = EnumRaycastFilterTypeBlacklist
+            local RaycastIgnore = AimingSettings.RaycastIgnore
+            raycastParams.FilterDescendantsInstances = (typeof(RaycastIgnore) == "function" and RaycastIgnore() or RaycastIgnore) or {Character, CurrentCamera}
 
-            -- // Return
-            return Visible
+            -- // Cast ray
+            local Result = Raycast(Workspace, Origin, Part.Position - Origin, raycastParams)
+
+            -- // Make sure we get a result
+            if (Result) then
+                -- // Vars
+                local PartHit = Result.Instance
+                local Visible = PartHit == Part or IsDescendantOf(PartHit, PartDescendant)
+
+                -- // Return
+                return Visible
+            end
         end
+
+        -- // Return
+        return false
     end
 
-    -- // Return
-    return false
-end
+    -- // Get the Direction, Normal and Material
+    function Utilities.Raycast(Origin, Destination, UnitMultiplier)
+        if (typeof(Origin) == "Vector3" and typeof(Destination) == "Vector3") then
+            -- // Handling
+            if (not UnitMultiplier) then UnitMultiplier = 1 end
 
--- // Ignore player
-function Aiming.IgnorePlayer(Player)
-    -- // Vars
-    local Ignored = Aiming.Ignored
-    local IgnoredPlayers = Ignored.Players
+            -- // Vars
+            local Direction = (Destination - Origin).Unit * UnitMultiplier
+            local Result = Raycast(Workspace, Origin, Direction)
 
-    -- // Find player in table
-    for _, IgnoredPlayer in ipairs(IgnoredPlayers) do
-        -- // Make sure player matches
-        if (IgnoredPlayer == Player) then
-            return false
+            -- // Make sure we have a result
+            if (Result) then
+                local Normal = Result.Normal
+                local Material = Result.Material
+
+                return Direction, Normal, Material
+            end
         end
-    end
 
-    -- // Blacklist player
-    tableinsert(IgnoredPlayers, Player)
-    return true
-end
-
--- // Unignore Player
-function Aiming.UnIgnorePlayer(Player)
-    -- // Vars
-    local Ignored = Aiming.Ignored
-    local IgnoredPlayers = Ignored.Players
-
-    -- // Find player in table
-    for i, IgnoredPlayer in ipairs(IgnoredPlayers) do
-        -- // Make sure player matches
-        if (IgnoredPlayer == Player) then
-            -- // Remove from ignored
-            tableremove(IgnoredPlayers, i)
-            return true
-        end
+        -- // Return
+        return nil
     end
 
     -- //
-    return false
+    function Utilities.SetCameraCFrame(CFr)
+        CurrentCamera.CFrame = CFr
+    end
+
+    -- //
+    function Utilities.CameraLookAt(Position)
+        local LookAt = CFramelookAt(CurrentCamera.CFrame.Position, Position)
+        Utilities.SetCameraCFrame(LookAt)
+    end
 end
 
--- // Ignore team
-function Aiming.IgnoreTeam(Team, TeamColor)
+-- // Ignored
+local Ignored = {}
+Aiming.Ignored = Ignored
+do
     -- // Vars
-    local Ignored = Aiming.Ignored
-    local IgnoredTeams = Ignored.Teams
+    local IgnoredSettings = Aiming.Settings.Ignored
 
-    -- // Find team in table
-    for _, IgnoredTeam in ipairs(IgnoredTeams) do
-        -- // Make sure team matches
-        if (IgnoredTeam.Team == Team and IgnoredTeam.TeamColor == TeamColor) then
-            return false
+    -- // Ignore player
+    function Ignored.IgnorePlayer(Player)
+        -- // Vars
+        local IgnoredPlayers = IgnoredSettings.Players
+
+        -- // Find player in table
+        for _, IgnoredPlayer in ipairs(IgnoredPlayers) do
+            -- // Make sure player matches
+            if (IgnoredPlayer == Player) then
+                return false
+            end
         end
+
+        -- // Blacklist player
+        tableinsert(IgnoredPlayers, Player)
+        return true
+    end
+
+    -- // Unignore Player
+    function Ignored.UnIgnorePlayer(Player)
+        -- // Vars
+        local IgnoredPlayers = IgnoredSettings.Players
+
+        -- // Find player in table
+        for i, IgnoredPlayer in ipairs(IgnoredPlayers) do
+            -- // Make sure player matches
+            if (IgnoredPlayer == Player) then
+                -- // Remove from ignored
+                tableremove(IgnoredPlayers, i)
+                return true
+            end
+        end
+
+        -- //
+        return false
     end
 
     -- // Ignore team
-    tableinsert(IgnoredTeams, {Team, TeamColor})
-    return true
-end
-
--- // Unignore team
-function Aiming.UnIgnoreTeam(Team, TeamColor)
-    -- // Vars
-    local Ignored = Aiming.Ignored
-    local IgnoredTeams = Ignored.Teams
-
-    -- // Find team in table
-    for i, IgnoredTeam in ipairs(IgnoredTeams) do
-        -- // Make sure team matches
-        if (IgnoredTeam.Team == Team and IgnoredTeam.TeamColor == TeamColor) then
-            -- // Remove
-            tableremove(IgnoredTeams, i)
-            return true
-        end
-    end
-
-    -- // Return
-    return false
-end
-
--- //  Toggle team check
-function Aiming.TeamCheck(Toggle)
-    if (Toggle) then
-        return Aiming.IgnoreTeam(LocalPlayer.Team, LocalPlayer.TeamColor)
-    end
-
-    return Aiming.UnIgnoreTeam(LocalPlayer.Team, LocalPlayer.TeamColor)
-end
-
--- // Check teams
-function Aiming.IsIgnoredTeam(Player)
-    -- // Vars
-    local Ignored = Aiming.Ignored
-    local IgnoredTeams = Ignored.Teams
-
-    -- // Check for others
-    if (Ignored.IgnoreOtherTeams) then
-        return (LocalPlayer.Team == Player.Team and LocalPlayer.TeamColor == Player.TeamColor)
-    end
-
-    -- // Check if team is ignored
-    for _, IgnoredTeam in ipairs(IgnoredTeams) do
-        -- // Make sure team matches
-        if (Player.Team == IgnoredTeam.Team and Player.TeamColor == IgnoredTeam.TeamColor) then
-            return true
-        end
-    end
-
-    -- // Return
-    return false
-end
-
--- // Check if player (and team) is ignored
-function Aiming.IsIgnored(Player)
-    -- // Vars
-    local Ignored = Aiming.Ignored
-    local IgnoredPlayers = Ignored.Players
-
-    -- // Loop
-    for _, IgnoredPlayer in ipairs(IgnoredPlayers) do
-        -- // Check if Player Id
-        if (typeof(IgnoredPlayer) == "number" and Player.UserId == IgnoredPlayer) then
-            return true
-        end
-
-        -- // Normal Player Instance
-        if (IgnoredPlayer == Player) then
-            return true
-        end
-    end
-
-    -- // Team check
-    return Aiming.IsIgnoredTeam(Player)
-end
-
--- // Get the Direction, Normal and Material
-function Aiming.Raycast(Origin, Destination, UnitMultiplier)
-    if (typeof(Origin) == "Vector3" and typeof(Destination) == "Vector3") then
-        -- // Handling
-        if (not UnitMultiplier) then UnitMultiplier = 1 end
-
+    function Ignored.IgnoreTeam(Team, TeamColor)
         -- // Vars
-        local Direction = (Destination - Origin).Unit * UnitMultiplier
-        local Result = Raycast(Workspace, Origin, Direction)
+        local IgnoredTeams = IgnoredSettings.Teams
 
-        -- // Make sure we have a result
-        if (Result) then
-            local Normal = Result.Normal
-            local Material = Result.Material
-
-            return Direction, Normal, Material
+        -- // Find team in table
+        for _, IgnoredTeam in ipairs(IgnoredTeams) do
+            -- // Make sure team matches
+            if (IgnoredTeam.Team == Team and IgnoredTeam.TeamColor == TeamColor) then
+                return false
+            end
         end
+
+        -- // Ignore team
+        tableinsert(IgnoredTeams, {Team, TeamColor})
+        return true
     end
 
-    -- // Return
-    return nil
+    -- // Unignore team
+    function Ignored.UnIgnoreTeam(Team, TeamColor)
+        -- // Vars
+        local IgnoredTeams = IgnoredSettings.Teams
+
+        -- // Find team in table
+        for i, IgnoredTeam in ipairs(IgnoredTeams) do
+            -- // Make sure team matches
+            if (IgnoredTeam.Team == Team and IgnoredTeam.TeamColor == TeamColor) then
+                -- // Remove
+                tableremove(IgnoredTeams, i)
+                return true
+            end
+        end
+
+        -- // Return
+        return false
+    end
+
+    -- // Check teams
+    function Ignored.IsIgnoredTeam(Player)
+        -- // Vars
+        local IgnoredTeams = IgnoredSettings.Teams
+
+        -- // Check for others
+        if (Ignored.IgnoreLocalTeam) then
+            return (LocalPlayer.Team == Player.Team and LocalPlayer.TeamColor == Player.TeamColor)
+        end
+
+        -- // Check if team is ignored
+        for _, IgnoredTeam in ipairs(IgnoredTeams) do
+            -- // Make sure team matches
+            if (Player.Team == IgnoredTeam.Team and Player.TeamColor == IgnoredTeam.TeamColor) then
+                return true
+            end
+        end
+
+        -- // Return
+        return false
+    end
+
+    -- // Check if player (and team) is ignored
+    function Ignored.IsIgnored(Player)
+        -- // Vars
+        local IgnoredPlayers = IgnoredSettings.Players
+
+        -- // Loop
+        for _, IgnoredPlayer in ipairs(IgnoredPlayers) do
+            -- // Check if Player Id
+            if (typeof(IgnoredPlayer) == "number" and Player.UserId == IgnoredPlayer) then
+                return true
+            end
+
+            -- // Normal Player Instance
+            if (IgnoredPlayer == Player) then
+                return true
+            end
+        end
+
+        -- // Team check
+        return Ignored.IsIgnoredTeam(Player)
+    end
+
+    -- // Toggle team check
+    function Ignored.TeamCheck(Toggle)
+        if (Toggle) then
+            return Ignored.IgnoreTeam(LocalPlayer.Team, LocalPlayer.TeamColor)
+        end
+
+        return Ignored.UnIgnoreTeam(LocalPlayer.Team, LocalPlayer.TeamColor)
+    end
 end
 
--- // Get Character
-function Aiming.Character(Player)
-    return Player.Character
+-- // Checks
+local Checks = {}
+Aiming.Checks = Checks
+do
+    -- // Check Health
+    function Checks.Health(Player)
+        -- // Get Humanoid
+        local Character = Utilities.Character(Player)
+        local Humanoid = FindFirstChildWhichIsA(Character, "Humanoid")
+
+        -- // Get Health
+        local Health = (Humanoid and Humanoid.Health or 0)
+
+        -- //
+        return Health > 0
+    end
+
+    -- // Custom Check Function
+    function Checks.Custom(Player)
+        return true
+    end
+
+    -- // Check if the module is enabled and we have targets
+    function Checks.IsAvailable()
+        return (AimingSettings.Enabled == true and Aiming.Selected.Instance)
+    end
 end
-
--- // Check Health
-function Aiming.CheckHealth(Player)
-    -- // Get Humanoid
-    local Character = Aiming.Character(Player)
-    local Humanoid = FindFirstChildWhichIsA(Character, "Humanoid")
-
-    -- // Get Health
-    local Health = (Humanoid and Humanoid.Health or 0)
-
-    -- //
-    return Health > 0
-end
-
--- // Custom Check Function
-function Aiming.CheckCustom(Player)
-    return true
-end
-
--- // Check if silent aim can used
-function Aiming.Check()
-    return (Aiming.Enabled == true and Aiming.Selected ~= LocalPlayer and Aiming.SelectedPart ~= nil)
-end
-Aiming.checkSilentAim = Aiming.Check
 
 -- // Get Closest Target Part
 function Aiming.GetClosestTargetPartToCursor(Character)
-    local TargetParts = Aiming.TargetPart
+    local TargetParts = AimingSettings.TargetPart
 
     -- // Vars
     local ClosestPart = nil
@@ -370,7 +423,7 @@ function Aiming.GetClosestTargetPartToCursor(Character)
 
         -- // Get the length between Mouse and Target Part (on screen)
         local PartPos, onScreen = WorldToViewportPoint(CurrentCamera, TargetPart.Position)
-        PartPos = Vector2.new(PartPos.X, PartPos.Y)
+        PartPos = Vector2new(PartPos.X, PartPos.Y)
 
         local MousePosition = GetMouseLocation(UserInputService)
         local GuiInset = GetGuiInset(GuiService)
@@ -393,14 +446,12 @@ function Aiming.GetClosestTargetPartToCursor(Character)
         -- // Check if it all
         if (TargetParts == "All") then
             -- // Loop through character children
-            for _, v in ipairs(Character:GetChildren()) do
+            for _, v in ipairs(GetChildren(Character)) do
                 -- // See if it a part
-                if not (v:IsA("BasePart")) then
-                    continue
+                if (v:IsA("BasePart")) then
+                    -- // Check it
+                    CheckTargetPart(v)
                 end
-
-                -- // Check it
-                CheckTargetPart(v)
             end
         else
             -- // Individual
@@ -420,84 +471,76 @@ function Aiming.GetClosestTargetPartToCursor(Character)
     return ClosestPart, ClosestPartPosition, ClosestPartOnScreen, ClosestPartMagnitudeFromMouse
 end
 
--- // Silent Aim Function
-function Aiming.GetClosestPlayerToCursor()
+-- //
+function Aiming.GetClosestToCursor()
     -- // Vars
     local TargetPart = nil
     local ClosestPlayer = nil
     local PartPosition = nil
-    local PartPositionOnScreen = nil
-    local Chance = CalcChance(Aiming.HitChance)
-    local ShortestDistance = 1/0
+    local PartOnScreen = nil
+    local Chance = Utilities.CalculateChance(AimingSettings.HitChance)
+    local ShortestDistance = circle.Radius
+    local AimingSelected = Aiming.Selected
 
-    -- // Chance
+    -- // See if it passed the chance
     if (not Chance) then
-        Aiming.Selected = LocalPlayer
-        Aiming.SelectedPart = nil
-        Aiming.SelectedPosition = nil
-        Aiming.SelectedPositionOnScreen = nil
+        -- // Set
+        AimingSelected.Instance = LocalPlayer
+        AimingSelected.Part = nil
+        AimingSelected.Position = nil
+        AimingSelected.OnScreen = false
 
-        return LocalPlayer
+        -- // Return
+        return
     end
 
     -- // Loop through all players
     for _, Player in ipairs(GetPlayers(Players)) do
         -- // Get Character
-        local Character = Aiming.Character(Player)
+        local Character = Utilities.Character(Player)
 
         -- // Make sure isn't ignored and Character exists
-        if (Aiming.IsIgnored(Player) == false and Character) then
+        if (Ignored.IsIgnored(Player) == false and Character) then
             -- // Vars
             local TargetPartTemp, PartPositionTemp, PartPositionOnScreenTemp, Magnitude = Aiming.GetClosestTargetPartToCursor(Character)
 
             -- // Check if part exists, health and custom
-            if (TargetPartTemp and Aiming.CheckHealth(Player) and Aiming.CheckCustom(Player)) then
+            if (TargetPartTemp and Checks.Health(Player) and Checks.Custom(Player)) then
                 -- // Check if is in FOV
-                if (circle.Radius > Magnitude and Magnitude < ShortestDistance) then
+                if (Magnitude < ShortestDistance) then
                     -- // Check if Visible
-                    if (Aiming.VisibleCheck and not Aiming.IsPartVisible(TargetPartTemp, Character)) then continue end
+                    if (AimingSettings.VisibleCheck and not Utilities.IsPartVisible(TargetPartTemp, Character)) then continue end
 
                     -- // Set vars
                     ClosestPlayer = Player
                     ShortestDistance = Magnitude
                     TargetPart = TargetPartTemp
                     PartPosition = PartPositionTemp
-                    PartPositionOnScreen = PartPositionOnScreenTemp
+                    PartOnScreen = PartPositionOnScreenTemp
                 end
             end
         end
     end
 
     -- // Firing changed signals
-    if (Aiming.Selected ~= ClosestPlayer) then
-        Aiming.Signals:Fire("TargetPlayerChanged", ClosestPlayer)
+    if (AimingSelected.Instance ~= ClosestPlayer) then
+        Aiming.Signals:Fire("InstanceChanged", ClosestPlayer)
     end
-    if (Aiming.SelectedPart ~= TargetPart) then
-        Aiming.Signals:Fire("TargetPartChanged", TargetPart)
+    if (AimingSelected.Part ~= TargetPart) then
+        Aiming.Signals:Fire("PartChanged", TargetPart)
     end
-    if (Aiming.SelectedPosition ~= PartPosition) then
-        Aiming.Signals:Fire("TargetPartPositionChanged", PartPosition)
+    if (AimingSelected.Position ~= PartPosition) then
+        Aiming.Signals:Fire("PartPositionChanged", PartPosition)
     end
-    if (Aiming.SelectedPositionOnScreen ~= PartPositionOnScreen) then
-        Aiming.Signals:Fire("TargetPartPositionOnScreenChanged", PartPositionOnScreen)
+    if (AimingSelected.OnScreen ~= PartOnScreen) then
+        Aiming.Signals:Fire("OnScreenChanged", PartOnScreen)
     end
 
     -- // End
-    Aiming.Selected = ClosestPlayer
-    Aiming.SelectedPart = TargetPart
-    Aiming.SelectedPosition = PartPosition
-    Aiming.SelectedPositionOnScreen = PartPositionOnScreen
-end
-
--- //
-function Aiming.SetCameraCFrame(CFr)
-    CurrentCamera.CFrame = CFr
-end
-
--- //
-function Aiming.CameraLookAt(Position)
-    local LookAt = CFrame.lookAt(CurrentCamera.CFrame.Position, Position)
-    Aiming.SetCameraCFrame(LookAt)
+    AimingSelected.Instance = ClosestPlayer
+    AimingSelected.Part = TargetPart
+    AimingSelected.Position = PartPosition
+    AimingSelected.OnScreen = PartOnScreen
 end
 
 -- // Beizer Aim Curves
@@ -530,7 +573,7 @@ do
     -- // Convert function to use Aiming
     ManagerB.Function = function(Pitch, Yaw)
         local RotationMatrix = CFrame.fromEulerAnglesYXZ(Pitch, Yaw, 0)
-        Aiming.SetCameraCFrame(CFrame.new(CurrentCamera.CFrame.Position) * RotationMatrix)
+        Utilities.SetCameraCFrame(CFrame.new(CurrentCamera.CFrame.Position) * RotationMatrix)
     end
 
     -- // Start
@@ -541,17 +584,17 @@ end
 -- // Heartbeat Function
 Heartbeat:Connect(function()
     Aiming.UpdateFOV()
-    Aiming.GetClosestPlayerToCursor()
+    Aiming.GetClosestToCursor()
 end)
 
--- // Credits (by disabling this and not including your own way of crediting within the script, e.g. credits tab, is violating the license agreement. Beware!)
 task.delay(1, function()
+    -- // Credits (by disabling this and not including your own way of crediting within the script, e.g. credits tab, is violating the license agreement. Beware!)
     if (Aiming.ShowCredits) then
-        messagebox("Thanks to Stefanuk12 for their Aiming Module (v1).\n\nNote: This module is outdated, please see github.com/Stefanuk12/Aiming for the updated version!", "Credits", 0)
+        messagebox("Thanks to Stefanuk12 for their Aiming Module (v2, Module)", "Credits", 0)
     end
 end)
 
 -- //
 return Aiming
 
--- // If you want the examples, look at the docs
+-- // If you want the examples, look at the docs.
