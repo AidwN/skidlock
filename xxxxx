@@ -1,4 +1,4 @@
-xif getgenv().Aiming then return getgenv().Aiming end
+if getgenv().Aiming then return getgenv().Aiming end
 
 -- // Dependencies
 local SignalManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/Stefanuk12/Signal/main/Manager.lua"))()
